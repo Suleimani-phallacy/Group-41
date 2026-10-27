@@ -1,15 +1,4 @@
-"""
-preprocess.py - Text cleaning, de-duplication and lemmatization.
 
-Pipeline per document
----------------------
-raw text -> strip HTML/script -> drop URLs/e-mails -> lowercase -> remove boilerplate phrases
-         -> keep alphabetic characters only -> lemmatize (spaCy, else NLTK, else a tiny rule-based
-         fallback) -> remove English + web-boilerplate stop-words -> `cleaned_text`
-
-De-duplication happens on (canonical URL) and (hash of the normalized text) before the
-expensive lemmatization step.
-"""
 from __future__ import annotations
 
 import hashlib
