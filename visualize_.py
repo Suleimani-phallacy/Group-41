@@ -1,9 +1,4 @@
-"""
-visualize.py - Charts for the Keyword & Theme Intelligence System.
 
-Every function returns a `matplotlib.figure.Figure` (so Streamlit can `st.pyplot` it and the CLI
-can save it). The "Agg" backend is selected so nothing needs a display.
-"""
 from __future__ import annotations
 
 import textwrap
