@@ -1,17 +1,4 @@
-"""
-scraper.py - Ethical web ingestion + SQLite persistence.
 
-Responsibilities
-----------------
-* Fetch pages politely (robots.txt, crawl-delay, rate limiting, identifiable UA).
-* Defensive error handling: timeouts, SSL fallback, 403 / 429 handling.
-* Extract title, URL, date, main text for every page (trafilatura -> BeautifulSoup fallback).
-* Optionally discover more pages on the same site (small breadth-first crawl).
-* Persist raw pages to SQLite (`scraped_data.db`) and export CSV (`scraped_dataset.csv`).
-
-Nothing here tries to defeat access controls: if a site says no (robots.txt, 403),
-the page is skipped and logged.
-"""
 from __future__ import annotations
 
 import json
