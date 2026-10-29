@@ -233,11 +233,11 @@ keyword-theme-intelligence/
 
 The `data/` and `outputs/` directories are generated during execution. Their contents depend on the input sources and the analyses performed.
 
-## 7. Running the Project
+## 6. Running the Project
 
 The project can be run using `pipeline.py`, which collects website data and performs the text analysis.
 
-### 7.1 Compare Two Websites
+### 6.1 Compare Two Websites
 
 Example :To compare the websites of IISER Mohali and IISER Pune, run:
 
@@ -247,7 +247,7 @@ python pipeline.py --source1 https://www.iisermohali.ac.in --source2 https://www
 
 This collects accessible text from both websites, analyses the content, and generates keywords, topics, graphs, and comparison results.
 
-### 7.2 Analyse Specific Webpages
+### 6.2 Analyse Specific Webpages
 
 To analyse specific webpages without collecting additional pages from the same websites, run:
 
@@ -257,7 +257,7 @@ python pipeline.py --urls https://example.org/page1 https://example.org/page2 --
 
 Replace the example URLs with the webpages you want to analyse.
 
-### 7.3 Choose a Topic-Modelling Method
+### 6.3 Choose a Topic-Modelling Method
 
 The project supports two methods for finding topics in text.
 
@@ -275,7 +275,7 @@ python pipeline.py --source1 https://example.org --topic-method kmeans --topics 
 
 Here, `--topics 5` sets the number of topics or groups to five.
 
-### 7.4 Set the Number of Pages to Collect
+### 6.4 Set the Number of Pages to Collect
 
 To limit the number of pages collected and control how deeply the scraper follows links, run:
 
@@ -287,7 +287,7 @@ This sets a limit of 10 pages per source, a crawl depth of 1, and a delay of at 
 
 Always follow the website's scraping rules and access restrictions.
 
-### 7.5 Turn Off Optional Analyses
+### 6.5 Turn Off Optional Analyses
 
 To skip source classification, named-entity recognition, and keyword trend analysis, run:
 
@@ -295,7 +295,7 @@ To skip source classification, named-entity recognition, and keyword trend analy
 python pipeline.py --source1 https://example.org --no-classification --no-ner --no-temporal
 ```
 
-### 7.6 Analyse Previously Collected Data
+### 6.6 Analyse Previously Collected Data
 
 If you have already collected data and want to analyse it again without scraping the websites, run:
 
@@ -305,7 +305,7 @@ python pipeline.py --skip-scrape
 
 This uses the previously saved data in `data/scraped_data.db`. The database must already contain usable data.
 
-### 7.7 View All Available Options
+### 6.7 View All Available Options
 
 To see all the commands and settings supported by the project, run:
 
@@ -315,7 +315,7 @@ python pipeline.py --help
 
 **Note:** Replace example URLs with your chosen websites. The results depend on the data collected and whether the websites allow automated access.
 
-## 8. Generated Outputs
+## 7. Generated Outputs
 
 The pipeline saves collected data, figures, and analytical tables.
 
@@ -341,27 +341,27 @@ Additional exports may include source-specific keyword tables, word-frequency ta
 Some outputs are conditional on the number of sources, availability of dates, successful model execution, and the data collected. The precise output filenames should be verified against the generated files for the version being run.
 
 
-### Source Classification
+### 8.Source Classification
 
 Classification performance is evaluated using accuracy, F1-score, classification reports, and confusion matrices. Results should be interpreted in light of the number of documents, class balance, and the possibility of source-specific stylistic signals.
 
-### Comparative Analysis
+### 9.Comparative Analysis
 
 Relative term frequencies and distinctive-term scores are used to identify similarities and differences between sources.
 
-### Temporal Analysis
+### 10.Temporal Analysis
 
 When reliable publication dates are available, selected keyword frequencies are examined over time.
 
 These evaluation methods provide different perspectives on the quality of extracted keywords, the interpretability of discovered themes, and the usefulness of source comparisons.
 
-## 10. Ethical Web Scraping and Responsible Data Collection
+## 11. Ethical Web Scraping and Responsible Data Collection
 
 This project is designed around responsible web collection practices intended to reduce unnecessary server load, respect website restrictions, and limit collection to content relevant to the analysis.
 
 **Public accessibility does not automatically grant permission to scrape, store, reproduce, or redistribute website content.** Each source must be assessed individually before collection.
 
-### 10.1 Respecting `robots.txt`
+### 11.1 Respecting `robots.txt`
 
 Before fetching a webpage, the scraper checks the site's `robots.txt` rules using Python's `urllib.robotparser`.
 
@@ -372,7 +372,7 @@ Before fetching a webpage, the scraper checks the site's `robots.txt` rules usin
 
 The `robots.txt` file is a mechanism for communicating crawler preferences and restrictions. Checking it does not replace the need to review the site's terms of use or obtain permission where required.
 
-### 10.2 Transparent Crawler Identification
+### 11.2 Transparent Crawler Identification
 
 The scraper sends a `User-Agent` header that includes the `KeywordThemeBot` identifier and indicates that the crawler is being used for an educational NLP project.
 
@@ -380,7 +380,7 @@ This helps website operators identify the automated requests and understand thei
 
 Crawler identification should support transparency and accountability rather than conceal automated access.
 
-### 10.3 Rate Limiting and Server Load
+### 11.3 Rate Limiting and Server Load
 
 The scraper uses sequential requests and per-host rate limiting to avoid generating unnecessary traffic.
 
@@ -397,7 +397,7 @@ When the server returns HTTP 429 (Too Many Requests) or HTTP 503 (Service Unavai
 
 These safeguards help reduce server load. They do not guarantee that a website permits the requested activity, and its access policies must still be respected.
 
-### 10.4 No Circumvention of Access Restrictions
+### 11.4 No Circumvention of Access Restrictions
 
 The project is intended to collect publicly accessible webpage content without bypassing access controls.
 
@@ -409,7 +409,7 @@ The project is intended to collect publicly accessible webpage content without b
 
 A website's refusal of automated access must be respected. Technical accessibility is not evidence of authorization.
 
-### 10.5 SSL and Secure Connections
+### 11.5 SSL and Secure Connections
 
 Secure HTTPS connections help protect the integrity and authenticity of retrieved content.
 
@@ -417,7 +417,7 @@ The current scraper includes an optional fallback that retries a request without
 
 For a stronger security posture, disable the insecure SSL fallback and investigate certificate or network configuration problems instead of accepting an unverified connection.
 
-### 10.6 Respecting Terms of Use and Copyright
+### 11.6 Respecting Terms of Use and Copyright
 
 Before collecting content from a website, users should:
 
@@ -429,7 +429,7 @@ Before collecting content from a website, users should:
 
 If a website prohibits the proposed collection, that restriction should be respected even if the scraper can technically access its pages.
 
-### 10.7 Data Minimization and Duplicate Removal
+### 11.7 Data Minimization and Duplicate Removal
 
 The pipeline collects fields relevant to textual analysis, including page titles, URLs, publication dates when available, and main textual content.
 
@@ -444,7 +444,7 @@ It also applies several measures to reduce irrelevant or redundant data:
 
 These measures improve the quality of the dataset and limit unnecessary processing. They do not eliminate every possible privacy or copyright concern.
 
-### 10.8 Error Handling and Conservative Behaviour
+### 11.8 Error Handling and Conservative Behaviour
 
 Websites may block automated requests, become unavailable, or return incomplete content.
 
@@ -452,7 +452,7 @@ The scraper records collection outcomes and handles failures through controlled 
 
 Users should review collection logs and investigate repeated failures before running the scraper again.
 
-### 10.9 Responsible Use of Collected Data
+### 11.9 Responsible Use of Collected Data
 
 The collected content is intended for educational text analysis, including keyword extraction, topic modelling, source classification, and comparison of aggregate textual patterns.
 
@@ -462,7 +462,7 @@ Where possible, reports should emphasize derived results, such as keyword rankin
 
 **Ethical principle:** The ability to retrieve a webpage programmatically does not establish permission to collect or reuse its content. Responsible collection requires transparency, minimal server impact, respect for access restrictions, and appropriate handling of collected text.
 
-## 11. Limitations
+## 12. Limitations
 
 - Website structure and access restrictions can affect text extraction.
 - Some websites may block automated access or prohibit scraping.
@@ -477,7 +477,7 @@ Where possible, reports should emphasize derived results, such as keyword rankin
 - The optional SSL-verification fallback should be disabled for stronger connection security.
 
 
-## 12. Conclusion
+## 13. Conclusion
 
 The Keyword & Theme Intelligence System combines web scraping, text preprocessing, exploratory data analysis, TF-IDF keyword extraction, topic modelling, supervised classification, named-entity recognition, temporal analysis, and visualization in a configurable Python pipeline.
 
@@ -485,10 +485,10 @@ It provides a framework for transforming unstructured webpage content into inter
 
 By combining analytical methods with responsible data-collection practices, the project demonstrates how NLP and machine learning can be applied to real-world textual data.
 
-## 13. Acknowledgements
+## 14. Acknowledgements
 
 Developed as part of a data science course project focused on keyword identification, topic discovery, and comparative text analysis.
 
-## 14. License
+## 15. License
 
 No license has been specified for this repository yet. 
