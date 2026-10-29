@@ -1,20 +1,3 @@
-#!/usr/bin/env python3
-"""
-pipeline.py - End-to-end orchestration + command-line interface.
-
-    # compare two OR MORE sources (each crawls up to 30 same-site pages, politely)
-    python pipeline.py --source IISER_Mohali https://www.iisermohali.ac.in \
-                       --source IISER_Pune   https://www.iiserpune.ac.in \
-                       --source IISER_Kolkata https://www.iiserkol.ac.in
-
-    # a single URL or an explicit list of URLs (no link discovery)
-    python pipeline.py --urls https://example.org/a https://example.org/b --no-crawl
-
-    # re-run the analysis on what is already stored in data/scraped_data.db
-    python pipeline.py --skip-scrape
-
-The Streamlit dashboard (app.py) calls `run_pipeline()` from this module.
-"""
 from __future__ import annotations
 
 import argparse
@@ -40,7 +23,7 @@ ProgressCB = Callable[[str, float], None]
 
 
 class PipelineError(RuntimeError):
-    """Fatal, user-presentable pipeline failure (carries the scrape log when available)."""
+    
 
     def __init__(self, message: str, scrape_log: Optional[pd.DataFrame] = None):
         super().__init__(message)
@@ -53,15 +36,15 @@ class PipelineConfig:
     output_dir: str = "outputs"
     scraper: sc.ScraperConfig = field(default_factory=sc.ScraperConfig)
     skip_scrape: bool = False
-    lemmatizer: str = "auto"                 # auto | spacy | nltk
+    lemmatizer: str = "auto"                 
     extra_stopwords: tuple = ()
     min_tokens: int = 20
-    max_tokens_per_doc: int = 4000           # cap on cleaned tokens per document (0 = no cap)
-    strip_templates: bool = True             # remove menus/footers/addresses repeated across a source's pages
-    template_threshold: float = 0.25         # ...a line is template if it is on >= 25% of that source's pages
+    max_tokens_per_doc: int = 4000          
+    strip_templates: bool = True            
+    template_threshold: float = 0.25        
     top_k_keywords: int = 20
-    n_topics: int = 5                        # 0 = choose automatically (coherence sweep)
-    topic_method: str = "lda"                # lda | kmeans
+    n_topics: int = 5                       
+    topic_method: str = "lda"              
     run_classification: bool = True
     run_ner: bool = True
     run_temporal: bool = True
@@ -84,13 +67,13 @@ class PipelineResults:
     sources: list
     scrape_log: pd.DataFrame
     prep: PreprocessReport
-    word_freq: dict                      # label (incl. "All sources") -> DataFrame
+    word_freq: dict                     
     bigrams: dict
     trigrams: dict
     keywords: an.KeywordResults
-    keyword_eval: dict                   # label -> evaluate_keywords() output
-    distinctive: Optional[dict] = None           # source -> one-vs-rest distinctive terms
-    similarity: Optional[dict] = None            # {"cosine": DF, "jsd": DF} source x source
+    keyword_eval: dict                   
+    distinctive: Optional[dict] = None           
+    similarity: Optional[dict] = None           
     topics: Optional[an.TopicResults] = None
     topic_sweep: Optional[pd.DataFrame] = None
     leakage: Optional[pd.DataFrame] = None
@@ -106,7 +89,7 @@ class PipelineResults:
 ALL = "All sources"
 
 
-def _noop(msg: str, frac: float) -> None:  # default progress callback
+def _noop(msg: str, frac: float) -> None: 
     pass
 
 
@@ -126,12 +109,12 @@ def run_pipeline(sources: Optional[dict], cfg: Optional[PipelineConfig] = None,
     tab_dir.mkdir(parents=True, exist_ok=True)
     sc.init_db(cfg.db_path)
 
-    # ---- 1. ingestion ------------------------------------------------------ #
+   
     scrape_log = pd.DataFrame(columns=["source_label", "url", "status", "detail"])
     if cfg.skip_scrape:
         progress("Loading pages from SQLite…", 0.05)
         raw = sc.load_pages(cfg.db_path)
-        if sources:  # optional label filter
+        if sources: 
             raw = raw[raw["source_label"].isin(sources.keys())]
         if raw.empty:
             raise PipelineError(f"No pages found in {cfg.db_path}. Run a scrape first.")
@@ -147,7 +130,6 @@ def run_pipeline(sources: Optional[dict], cfg: Optional[PipelineConfig] = None,
         ids = sc.save_pages(pages, cfg.db_path)
         raw = sc.load_pages(cfg.db_path, ids)
 
-    # ---- 2. cleaning ------------------------------------------------------- #
     progress("Cleaning, de-duplicating and lemmatizing…", 0.42)
     df, prep = preprocess_dataframe(raw, cfg.extra_stopwords, cfg.lemmatizer, cfg.min_tokens,
                                     cfg.strip_templates, cfg.template_threshold,
@@ -166,7 +148,6 @@ def run_pipeline(sources: Optional[dict], cfg: Optional[PipelineConfig] = None,
         if n < 10:
             warnings.append(f"'{lab}' has only {n} usable page(s); statistics will be noisy. Increase max pages.")
 
-    # ---- 3. EDA ------------------------------------------------------------ #
     progress("Exploratory analysis…", 0.58)
     groups = OrderedDict([(ALL, df["cleaned_text"])] + [(s, df.loc[df["source_label"] == s, "cleaned_text"]) for s in labels])
     word_freq = {k: an.word_frequencies(v, 50) for k, v in groups.items()}
@@ -175,7 +156,6 @@ def run_pipeline(sources: Optional[dict], cfg: Optional[PipelineConfig] = None,
     distinctive = an.distinctive_terms_by_source(df) if len(labels) > 1 else None
     similarity = an.source_similarity(df) if len(labels) > 1 else None
 
-    # ---- 4. keywords -------------------------------------------------------- #
     progress("TF-IDF keyword extraction…", 0.64)
     kw = an.extract_keywords(df, top_k=max(cfg.top_k_keywords, 20))
     keyword_eval = {ALL: an.evaluate_keywords(kw.overall, df, cfg.top_k_keywords, ALL)}
@@ -189,13 +169,12 @@ def run_pipeline(sources: Optional[dict], cfg: Optional[PipelineConfig] = None,
         progress(name, frac)
         try:
             return fn()
-        except Exception as exc:  # a failing optional stage must not discard the other results
+        except Exception as exc:  
             log.exception("%s failed", name)
             tb = traceback.extract_tb(exc.__traceback__)[-1]
             res.warnings.append(f"{name} failed: {exc}  [{Path(tb.filename).name}:{tb.lineno} in {tb.name}]")
             return None
 
-    # ---- 5-7. topics, classification, NER, temporal ------------------------- #
     def topics_stage():
         k = cfg.n_topics
         if k <= 0:
@@ -217,8 +196,7 @@ def run_pipeline(sources: Optional[dict], cfg: Optional[PipelineConfig] = None,
     if cfg.run_temporal:
         top_unigrams = [k for k in kw.overall["Keyword"] if " " not in k][:5]
         res.temporal = stage("Temporal analysis…", 0.90, lambda: an.temporal_keyword_trends(df, top_unigrams))
-
-    # ---- 8. outputs --------------------------------------------------------- #
+        
     progress("Rendering figures and saving tables…", 0.93)
     res.figures = build_figures(res)
     for name, fig in res.figures.items():
@@ -228,8 +206,6 @@ def run_pipeline(sources: Optional[dict], cfg: Optional[PipelineConfig] = None,
     progress("Done", 1.0)
     return res
 
-
-# --------------------------------------------------------------------------- #
 def build_figures(r: PipelineResults) -> "OrderedDict[str, object]":
     """Render every chart once. A failing chart is logged and skipped, never fatal."""
     figs: "OrderedDict[str, object]" = OrderedDict()
@@ -238,7 +214,7 @@ def build_figures(r: PipelineResults) -> "OrderedDict[str, object]":
     def add(name: str, fn: Callable) -> None:
         try:
             figs[name] = fn()
-            plt.close(figs[name])  # detach from pyplot's registry; the Figure object stays usable
+            plt.close(figs[name])  
         except Exception as exc:
             log.exception("figure %s failed", name)
             r.warnings.append(f"Figure '{name}' could not be rendered: {exc}")
@@ -330,9 +306,6 @@ def _slug(s: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in s).strip("_").lower()
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Keyword & Theme Intelligence System",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
