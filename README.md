@@ -287,25 +287,8 @@ This sets a limit of 10 pages per source, a crawl depth of 1, and a delay of at 
 
 Always follow the website's scraping rules and access restrictions.
 
-### 6.5 Turn Off Optional Analyses
 
-To skip source classification, named-entity recognition, and keyword trend analysis, run:
-
-```bash
-python pipeline.py --source1 https://example.org --no-classification --no-ner --no-temporal
-```
-
-### 6.6 Analyse Previously Collected Data
-
-If you have already collected data and want to analyse it again without scraping the websites, run:
-
-```bash
-python pipeline.py --skip-scrape
-```
-
-This uses the previously saved data in `data/scraped_data.db`. The database must already contain usable data.
-
-### 6.7 View All Available Options
+### 6.5 View All Available Options
 
 To see all the commands and settings supported by the project, run:
 
