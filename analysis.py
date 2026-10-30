@@ -1,10 +1,4 @@
-"""
-analysis.py - EDA statistics, keyword extraction, topic modelling, source classification,
-NER, keyword-quality evaluation and temporal analysis.
 
-All functions take the DataFrame produced by `preprocess.preprocess_dataframe`
-(columns: id, url, source_label, title, publish_date, date_source, raw_text, cleaned_text, token_count).
-"""
 from __future__ import annotations
 
 import logging
@@ -35,7 +29,7 @@ from preprocess import BOILERPLATE_WORDS, load_spacy
 
 log = logging.getLogger("analysis")
 
-TOKEN_PATTERN = r"(?u)\b[a-z]{3,}\b"   # cleaned text is lowercase alphabetic
+TOKEN_PATTERN = r"(?u)\b[a-z]{3,}\b"   
 KW_COLS = ["Keyword", "TF-IDF Score", "Raw Frequency", "Doc Frequency"]
 
 
@@ -49,9 +43,6 @@ def _sources(df: pd.DataFrame) -> list[str]:
     return list(dict.fromkeys(df["source_label"]))
 
 
-# =========================================================================== #
-# 1. EDA: word frequencies and n-grams
-# =========================================================================== #
 def term_counter(texts) -> Counter:
     c: Counter = Counter()
     for t in texts:
@@ -90,7 +81,7 @@ def distinctive_terms(df: pd.DataFrame, target: str, top_k: int = 15, min_count:
     Terms that separate `target` source from all other sources, using the log-odds ratio with an
     informative Dirichlet prior (Monroe et al., 2008). Positive z = over-represented in `target`.
     """
-    a_mask = _np_str(df["source_label"]) == target      # plain numpy bool array
+    a_mask = _np_str(df["source_label"]) == target      
     if a_mask.all() or not a_mask.any():
         return pd.DataFrame(columns=["term", "z_score", "count_target", "count_rest", "favored"])
     cv = CountVectorizer(token_pattern=TOKEN_PATTERN)
@@ -154,9 +145,6 @@ def source_similarity(df: pd.DataFrame) -> dict:
             "jsd": pd.DataFrame(jsd[np.ix_(order, order)], index=names, columns=names)}
 
 
-# =========================================================================== #
-# 2. TF-IDF keyword extraction
-# =========================================================================== #
 @dataclass
 class KeywordResults:
     vectorizer: TfidfVectorizer
@@ -164,7 +152,7 @@ class KeywordResults:
     counts: sparse.csr_matrix
     terms: np.ndarray
     overall: pd.DataFrame
-    per_source: dict = field(default_factory=dict)      # label -> keyword table
+    per_source: dict = field(default_factory=dict)     
     per_document: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
@@ -181,7 +169,7 @@ def _fit_tfidf(docs: list[str], ngram_range, min_df, max_df, max_features) -> Tf
                                   token_pattern=TOKEN_PATTERN, max_features=max_features)
             vec.fit(docs)
             return vec
-        except ValueError:  # "After pruning, no terms remain" -> relax and retry
+        except ValueError:  
             continue
     raise ValueError("No usable vocabulary - are the cleaned documents empty?")
 
@@ -236,18 +224,16 @@ def format_keyword_table(table: pd.DataFrame) -> str:
     return table.to_string(index=False)
 
 
-# =========================================================================== #
-# 3. Topic modelling (LDA or K-Means on TF-IDF)
-# =========================================================================== #
+
 @dataclass
 class TopicResults:
     method: str
     n_topics: int
-    topics: pd.DataFrame                       # topic_id, label, top_terms, n_docs, share, sample_docs
-    doc_topics: pd.Series                      # dominant topic per document (aligned with df.index)
-    term_weights: dict                         # topic_id -> [(term, weight), ...]
-    samples: dict                              # topic_id -> [dict(title, url, source_label, score)]
-    source_distribution: pd.DataFrame          # topic x source counts
+    topics: pd.DataFrame                       
+    doc_topics: pd.Series                    
+    term_weights: dict                        
+    samples: dict                             
+    source_distribution: pd.DataFrame         
     metrics: dict = field(default_factory=dict)
 
 
@@ -380,9 +366,6 @@ def select_n_topics(df: pd.DataFrame, method: str = "lda", k_range=None, random_
     return best, sweep
 
 
-# =========================================================================== #
-# 4. Source classification
-# =========================================================================== #
 @dataclass
 class ModelResult:
     name: str
@@ -392,7 +375,7 @@ class ModelResult:
     confusion: np.ndarray
     labels: list
     top_features: pd.DataFrame
-    cv_macro_f1: Optional[tuple] = None        # (mean, std) over stratified 5-fold CV, if feasible
+    cv_macro_f1: Optional[tuple] = None        
     pipeline: Optional[Pipeline] = None
 
 
@@ -412,7 +395,7 @@ def _top_features(pipe: Pipeline, n: int = 12) -> pd.DataFrame:
     clf = pipe.named_steps["clf"]
     classes = list(clf.classes_)
     rows = []
-    if clf.coef_.shape[0] == 1:   # binary: one weight vector, positive -> classes[1]
+    if clf.coef_.shape[0] == 1:   
         w = clf.coef_[0]
         for j in np.argsort(-w)[:n]:
             rows.append((classes[1], terms[j], float(w[j])))
@@ -574,9 +557,7 @@ def leakage_verdict(leak: pd.DataFrame) -> str:
     return msg + "Some of the accuracy depends on site-specific terms, but the sources remain partly separable on content."
 
 
-# =========================================================================== #
-# 5. Named-entity recognition
-# =========================================================================== #
+
 ENTITY_TYPES = {"ORG": "Organization", "GPE": "Location", "LOC": "Location", "PERSON": "Person"}
 
 
@@ -622,9 +603,7 @@ def top_entities(entities: pd.DataFrame, per_type: int = 10) -> pd.DataFrame:
             .sort_values(["source_label", "type", "mentions"], ascending=[True, True, False]).reset_index(drop=True))
 
 
-# =========================================================================== #
-# 6. Keyword quality evaluation (no ground truth needed)
-# =========================================================================== #
+
 def _padded(texts) -> list[str]:
     return [f" {t} " for t in texts]
 
@@ -711,12 +690,9 @@ def evaluate_keywords(keywords: pd.DataFrame, docs: pd.DataFrame, top_k: int = 2
     return {"table": table, "summary": summary, "report": "\n".join(lines)}
 
 
-# =========================================================================== #
-# 7. Temporal analysis
-# =========================================================================== #
 @dataclass
 class TemporalResults:
-    trend: Optional[pd.DataFrame] = None     # index = period start, columns = keywords, values = per 1,000 tokens
+    trend: Optional[pd.DataFrame] = None    
     freq: str = ""
     n_docs: int = 0
     message: str = ""
