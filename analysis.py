@@ -1,3 +1,10 @@
+"""
+analysis.py - EDA statistics, keyword extraction, topic modelling, source classification,
+NER, keyword-quality evaluation and temporal analysis.
+
+All functions take the DataFrame produced by `preprocess.preprocess_dataframe`
+(columns: id, url, source_label, title, publish_date, date_source, raw_text, cleaned_text, token_count).
+"""
 from __future__ import annotations
 
 import logging
@@ -10,11 +17,14 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 from scipy import sparse
+from scipy.cluster.hierarchy import leaves_list, linkage
+from scipy.spatial.distance import jensenshannon, squareform
 from sklearn.base import clone
 from sklearn.cluster import KMeans
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import (accuracy_score, classification_report, confusion_matrix, f1_score,
                              silhouette_score)
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
@@ -25,14 +35,23 @@ from preprocess import BOILERPLATE_WORDS, load_spacy
 
 log = logging.getLogger("analysis")
 
-TOKEN_PATTERN = r"(?u)\b[a-z]{3,}\b"
+TOKEN_PATTERN = r"(?u)\b[a-z]{3,}\b"   # cleaned text is lowercase alphabetic
 KW_COLS = ["Keyword", "TF-IDF Score", "Raw Frequency", "Doc Frequency"]
+
+
+def _np_str(s) -> np.ndarray:
+    """Series -> plain 1-D numpy object array of str. Avoids pandas/Arrow extension arrays, which some
+    scikit-learn versions cannot index with integer arrays ("only integer scalar arrays...")."""
+    return np.asarray(pd.Series(s).fillna("").astype(str).tolist(), dtype=object)
 
 
 def _sources(df: pd.DataFrame) -> list[str]:
     return list(dict.fromkeys(df["source_label"]))
 
 
+# =========================================================================== #
+# 1. EDA: word frequencies and n-grams
+# =========================================================================== #
 def term_counter(texts) -> Counter:
     c: Counter = Counter()
     for t in texts:
@@ -41,6 +60,7 @@ def term_counter(texts) -> Counter:
 
 
 def word_frequencies(texts, top_n: int = 50) -> pd.DataFrame:
+    """Top individual words: term, frequency, per-10k-token relative frequency."""
     c = term_counter(texts)
     total = sum(c.values()) or 1
     rows = [(w, n, round(n / total * 10_000, 2)) for w, n in c.most_common(top_n)]
@@ -48,6 +68,7 @@ def word_frequencies(texts, top_n: int = 50) -> pd.DataFrame:
 
 
 def top_ngrams(texts, n: int = 2, top_k: int = 20) -> pd.DataFrame:
+    """Most frequent n-grams (of the cleaned text, i.e. after stop-word removal)."""
     texts = [t for t in texts if t and t.strip()]
     empty = pd.DataFrame(columns=["ngram", "frequency", "documents"])
     if not texts:
@@ -65,14 +86,18 @@ def top_ngrams(texts, n: int = 2, top_k: int = 20) -> pd.DataFrame:
 
 
 def distinctive_terms(df: pd.DataFrame, target: str, top_k: int = 15, min_count: int = 3) -> pd.DataFrame:
-    a_mask = df["source_label"] == target
+    """
+    Terms that separate `target` source from all other sources, using the log-odds ratio with an
+    informative Dirichlet prior (Monroe et al., 2008). Positive z = over-represented in `target`.
+    """
+    a_mask = _np_str(df["source_label"]) == target      # plain numpy bool array
     if a_mask.all() or not a_mask.any():
         return pd.DataFrame(columns=["term", "z_score", "count_target", "count_rest", "favored"])
     cv = CountVectorizer(token_pattern=TOKEN_PATTERN)
     X = cv.fit_transform(df["cleaned_text"])
     terms = cv.get_feature_names_out()
-    ya = np.asarray(X[a_mask.values].sum(axis=0)).ravel().astype(float)
-    yb = np.asarray(X[~a_mask.values].sum(axis=0)).ravel().astype(float)
+    ya = np.asarray(X[a_mask].sum(axis=0)).ravel().astype(float)
+    yb = np.asarray(X[~a_mask].sum(axis=0)).ravel().astype(float)
     prior = ya + yb
     a0 = 500.0
     alpha = a0 * prior / prior.sum()
@@ -87,6 +112,51 @@ def distinctive_terms(df: pd.DataFrame, target: str, top_k: int = 15, min_count:
     return pd.concat([pos, neg]).reset_index(drop=True)
 
 
+def distinctive_terms_by_source(df: pd.DataFrame, top_k: int = 15, min_count: int = 3) -> dict:
+    """One-vs-rest distinctive terms for every source: {source_label: DataFrame} (see `distinctive_terms`)."""
+    return {s: distinctive_terms(df, s, top_k=top_k, min_count=min_count) for s in _sources(df)}
+
+
+def source_similarity(df: pd.DataFrame) -> dict:
+    """
+    Source x source similarity of vocabulary. Returns {"cosine": DataFrame, "jsd": DataFrame}:
+      cosine : cosine similarity of each source's mean TF-IDF profile (1 = identical)
+      jsd    : Jensen-Shannon distance between each source's word distributions (0 = identical, 1 = disjoint)
+    Sources are ordered by hierarchical clustering so that similar sources sit next to each other.
+    """
+    srcs = _sources(df)
+    texts = df["cleaned_text"]
+    labels = _np_str(df["source_label"])
+    masks = [labels == s for s in srcs]
+    tfidf = TfidfVectorizer(sublinear_tf=True, token_pattern=TOKEN_PATTERN)
+    T = tfidf.fit_transform(texts)
+    profiles = np.vstack([np.asarray(T[m].mean(axis=0)).ravel() for m in masks])
+    cos = np.clip(cosine_similarity(profiles), 0.0, 1.0)
+
+    C = CountVectorizer(token_pattern=TOKEN_PATTERN).fit_transform(texts)
+    dists = np.vstack([np.asarray(C[m].sum(axis=0)).ravel().astype(float) for m in masks])
+    dists = dists / np.where(dists.sum(axis=1, keepdims=True) == 0, 1, dists.sum(axis=1, keepdims=True))
+    k = len(srcs)
+    jsd = np.zeros((k, k))
+    for i in range(k):
+        for j in range(i + 1, k):
+            d = float(jensenshannon(dists[i], dists[j], base=2))
+            jsd[i, j] = jsd[j, i] = 0.0 if np.isnan(d) else d
+
+    order = list(range(k))
+    if k > 2:
+        d = 1.0 - cos
+        np.fill_diagonal(d, 0.0)
+        d = (d + d.T) / 2
+        order = list(leaves_list(linkage(squareform(d, checks=False), method="average")))
+    names = [srcs[i] for i in order]
+    return {"cosine": pd.DataFrame(cos[np.ix_(order, order)], index=names, columns=names),
+            "jsd": pd.DataFrame(jsd[np.ix_(order, order)], index=names, columns=names)}
+
+
+# =========================================================================== #
+# 2. TF-IDF keyword extraction
+# =========================================================================== #
 @dataclass
 class KeywordResults:
     vectorizer: TfidfVectorizer
@@ -94,7 +164,7 @@ class KeywordResults:
     counts: sparse.csr_matrix
     terms: np.ndarray
     overall: pd.DataFrame
-    per_source: dict = field(default_factory=dict)
+    per_source: dict = field(default_factory=dict)      # label -> keyword table
     per_document: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
@@ -111,7 +181,7 @@ def _fit_tfidf(docs: list[str], ngram_range, min_df, max_df, max_features) -> Tf
                                   token_pattern=TOKEN_PATTERN, max_features=max_features)
             vec.fit(docs)
             return vec
-        except ValueError:
+        except ValueError:  # "After pruning, no terms remain" -> relax and retry
             continue
     raise ValueError("No usable vocabulary - are the cleaned documents empty?")
 
@@ -127,6 +197,12 @@ def _keyword_table(scores: np.ndarray, raw: np.ndarray, docfreq: np.ndarray, ter
 
 def extract_keywords(df: pd.DataFrame, top_k: int = 20, ngram_range=(1, 2), min_df: Optional[int] = None,
                      max_df: float = 0.95, max_features: int = 50_000, per_doc_k: int = 10) -> KeywordResults:
+    """
+    TF-IDF (1-2 grams, sublinear tf) fitted on the whole corpus, then summarised:
+      * per document : top `per_doc_k` terms by TF-IDF in that document
+      * per source   : mean TF-IDF over the source's documents (Raw Frequency = total count in source)
+      * overall      : same, over every document
+    """
     docs = df["cleaned_text"].tolist()
     vec = _fit_tfidf(docs, ngram_range, min_df, max_df, max_features)
     X = vec.transform(docs).tocsr()
@@ -140,7 +216,7 @@ def extract_keywords(df: pd.DataFrame, top_k: int = 20, ngram_range=(1, 2), min_
                               np.asarray((Cm > 0).sum(axis=0)).ravel(), terms, top_k)
 
     overall = summarise(np.ones(len(df), dtype=bool))
-    per_source = {s: summarise((df["source_label"] == s).values) for s in _sources(df)}
+    per_source = {s: summarise(_np_str(df["source_label"]) == s) for s in _sources(df)}
 
     rows = []
     for i in range(X.shape[0]):
@@ -160,22 +236,52 @@ def format_keyword_table(table: pd.DataFrame) -> str:
     return table.to_string(index=False)
 
 
+# =========================================================================== #
+# 3. Topic modelling (LDA or K-Means on TF-IDF)
+# =========================================================================== #
 @dataclass
 class TopicResults:
     method: str
     n_topics: int
-    topics: pd.DataFrame
-    doc_topics: pd.Series
-    term_weights: dict
-    samples: dict
-    source_distribution: pd.DataFrame
+    topics: pd.DataFrame                       # topic_id, label, top_terms, n_docs, share, sample_docs
+    doc_topics: pd.Series                      # dominant topic per document (aligned with df.index)
+    term_weights: dict                         # topic_id -> [(term, weight), ...]
+    samples: dict                              # topic_id -> [dict(title, url, source_label, score)]
+    source_distribution: pd.DataFrame          # topic x source counts
     metrics: dict = field(default_factory=dict)
 
 
+def _npmi_coherence(docs: list, words: list) -> float:
+    """Mean normalised PMI (-1..1) over pairs of a topic's top words, using document co-occurrence."""
+    words = list(dict.fromkeys(words))
+    if len(words) < 2 or not docs:
+        return float("nan")
+    B = CountVectorizer(vocabulary=words, ngram_range=(1, 2), binary=True,
+                        token_pattern=TOKEN_PATTERN).transform(docs)
+    n = B.shape[0]
+    co = (B.T @ B).toarray().astype(float) / n
+    p = np.diag(co)
+    vals = []
+    for i in range(len(words)):
+        for j in range(i + 1, len(words)):
+            if p[i] == 0 or p[j] == 0:
+                continue
+            pij = co[i, j]
+            if pij <= 0:
+                vals.append(-1.0)
+            elif pij >= 1:
+                vals.append(1.0)
+            else:
+                vals.append(math.log(pij / (p[i] * p[j])) / -math.log(pij))
+    return float(np.mean(vals)) if vals else float("nan")
+
+
 def _assemble_topics(method, df, assignments, scores, term_weights, n_samples, metrics) -> TopicResults:
+    """`scores[i, k]` = affinity of doc i to topic k (probability for LDA, -distance for K-Means)."""
     k = scores.shape[1]
     doc_topics = pd.Series(assignments, index=df.index, name="topic")
-    rows, samples = [], {}
+    rows, samples, coh = [], {}, []
+    docs = df["cleaned_text"].tolist()
     for t in range(k):
         mask = np.where(assignments == t)[0]
         best = mask[np.argsort(-scores[mask, t])][:n_samples] if len(mask) else []
@@ -183,10 +289,15 @@ def _assemble_topics(method, df, assignments, scores, term_weights, n_samples, m
                            source_label=df["source_label"].iloc[i], score=round(float(scores[i, t]), 3))
                       for i in best]
         words = [w for w, _ in term_weights[t]]
+        c = _npmi_coherence(docs, words)
+        coh.append(c)
         rows.append(dict(topic_id=t, label=" / ".join(words[:3]), top_terms=", ".join(words),
+                         coherence_npmi=None if np.isnan(c) else round(c, 3),
                          n_docs=int(len(mask)), share=round(len(mask) / len(df), 3),
                          sample_docs=" | ".join(f"{str(s['title'])[:60]} ({s['source_label']})" for s in samples[t])))
     dist = pd.crosstab(doc_topics, df["source_label"]).reindex(range(k), fill_value=0)
+    if not np.all(np.isnan(coh)):
+        metrics = {**metrics, "mean_coherence_npmi": round(float(np.nanmean(coh)), 3)}
     return TopicResults(method, k, pd.DataFrame(rows), doc_topics, term_weights, samples, dist, metrics)
 
 
@@ -239,6 +350,39 @@ def run_topic_model(df: pd.DataFrame, method: str = "lda", **kw) -> TopicResults
     return run_lda(df, **kw) if method.lower() == "lda" else run_kmeans(df, **kw)
 
 
+def select_n_topics(df: pd.DataFrame, method: str = "lda", k_range=None, random_state: int = 42):
+    """
+    Choose the number of topics by sweeping k and keeping the one with the highest mean NPMI coherence
+    (ignoring values of k that produce an empty topic). Returns (best_k, sweep DataFrame).
+    """
+    n = len(df)
+    if k_range is None:
+        k_range = range(2, max(3, min(10, n // 3)) + 1)
+    rows = []
+    for k in k_range:
+        if k > n:
+            break
+        try:
+            r = run_topic_model(df, method, n_topics=k, random_state=random_state)
+        except Exception as exc:
+            log.warning("topic sweep: k=%s failed (%s)", k, exc)
+            continue
+        coh = pd.to_numeric(r.topics["coherence_npmi"], errors="coerce")
+        rows.append(dict(k=k, coherence_npmi=round(float(coh.mean()), 4), min_topic_docs=int(r.topics["n_docs"].min()),
+                         **{m: v for m, v in r.metrics.items() if m != "mean_coherence_npmi"}))
+    sweep = pd.DataFrame(rows, columns=["k", "coherence_npmi", "min_topic_docs"] + [
+        c for r_ in rows[:1] for c in r_ if c not in ("k", "coherence_npmi", "min_topic_docs")])
+    if sweep.empty:
+        return max(2, min(5, n)), sweep
+    ok = sweep[(sweep["min_topic_docs"] > 0) & sweep["coherence_npmi"].notna()]
+    pool = ok if len(ok) else sweep
+    best = int(pool.sort_values(["coherence_npmi", "k"], ascending=[False, True]).iloc[0]["k"])
+    return best, sweep
+
+
+# =========================================================================== #
+# 4. Source classification
+# =========================================================================== #
 @dataclass
 class ModelResult:
     name: str
@@ -248,7 +392,7 @@ class ModelResult:
     confusion: np.ndarray
     labels: list
     top_features: pd.DataFrame
-    cv_macro_f1: Optional[tuple] = None
+    cv_macro_f1: Optional[tuple] = None        # (mean, std) over stratified 5-fold CV, if feasible
     pipeline: Optional[Pipeline] = None
 
 
@@ -268,7 +412,7 @@ def _top_features(pipe: Pipeline, n: int = 12) -> pd.DataFrame:
     clf = pipe.named_steps["clf"]
     classes = list(clf.classes_)
     rows = []
-    if clf.coef_.shape[0] == 1:
+    if clf.coef_.shape[0] == 1:   # binary: one weight vector, positive -> classes[1]
         w = clf.coef_[0]
         for j in np.argsort(-w)[:n]:
             rows.append((classes[1], terms[j], float(w[j])))
@@ -283,8 +427,10 @@ def _top_features(pipe: Pipeline, n: int = 12) -> pd.DataFrame:
 
 
 def train_source_classifier(df: pd.DataFrame, test_size: float = 0.2, random_state: int = 42) -> ClassificationResults:
+    """Predict `source_label` from `cleaned_text` with LogisticRegression and LinearSVC (80/20 stratified)."""
     res = ClassificationResults()
-    y = df["source_label"].values.ravel()
+    y = _np_str(df["source_label"])
+    texts_all = _np_str(df["cleaned_text"])
     counts = pd.Series(y).value_counts()
     if len(counts) < 2:
         res.error = "Classification needs at least two sources."
@@ -299,7 +445,7 @@ def train_source_classifier(df: pd.DataFrame, test_size: float = 0.2, random_sta
         res.warnings.append(f"Test fraction raised to {eff_test:.2f} so every class appears in the test set.")
     try:
         Xtr, Xte, ytr, yte, itr, ite = train_test_split(
-            df["cleaned_text"].values, y, np.arange(n), test_size=eff_test, stratify=y, random_state=random_state)
+            texts_all, y, np.arange(n), test_size=eff_test, stratify=y, random_state=random_state)
     except ValueError as exc:
         res.error = f"Could not create a stratified split: {exc}"
         return res
@@ -316,7 +462,7 @@ def train_source_classifier(df: pd.DataFrame, test_size: float = 0.2, random_sta
         "LogisticRegression": make(LogisticRegression(max_iter=2000, class_weight="balanced")),
         "LinearSVC": make(LinearSVC(class_weight="balanced", random_state=random_state)),
     }
-    preds = pd.DataFrame({"url": df["url"].values[ite], "title": df["title"].values[ite], "true": yte})
+    preds = pd.DataFrame({"url": _np_str(df["url"])[ite], "title": _np_str(df["title"])[ite], "true": yte})
     rows = []
     for name, pipe in candidates.items():
         pipe.fit(Xtr, ytr)
@@ -326,7 +472,7 @@ def train_source_classifier(df: pd.DataFrame, test_size: float = 0.2, random_sta
         mf1 = f1_score(yte, pred, average="macro", zero_division=0)
         cv = None
         if counts.min() >= 5:
-            sc = cross_val_score(clone(pipe), df["cleaned_text"].values, y, scoring="f1_macro",
+            sc = cross_val_score(clone(pipe), texts_all, y, scoring="f1_macro",
                                  cv=StratifiedKFold(5, shuffle=True, random_state=random_state))
             cv = (float(sc.mean()), float(sc.std()))
         res.models[name] = ModelResult(
@@ -346,6 +492,91 @@ def train_source_classifier(df: pd.DataFrame, test_size: float = 0.2, random_sta
     return res
 
 
+def _cv_pipe(min_df: int = 1) -> Pipeline:
+    return Pipeline([("tfidf", TfidfVectorizer(ngram_range=(1, 2), sublinear_tf=True, min_df=min_df,
+                                                token_pattern=TOKEN_PATTERN)),
+                     ("clf", LogisticRegression(max_iter=2000, class_weight="balanced"))])
+
+
+def _cv_macro_f1(texts, y, folds: int, random_state: int, min_df: int = 1) -> float:
+    cv = StratifiedKFold(folds, shuffle=True, random_state=random_state)
+    return float(cross_val_score(_cv_pipe(min_df), texts, y, scoring="f1_macro", cv=cv).mean())
+
+
+def chance_baseline(df: pd.DataFrame, n_permutations: int = 20, cv_folds: int = 5, random_state: int = 42) -> dict:
+    """
+    Is the classifier better than chance? Cross-validated macro-F1 on the real labels vs. the same
+    score with the source labels randomly shuffled (permutation test).
+    """
+    texts, y = _np_str(df["cleaned_text"]), _np_str(df["source_label"])
+    counts = pd.Series(y).value_counts()
+    folds = int(min(cv_folds, counts.min()))
+    if len(counts) < 2 or folds < 2:
+        raise ValueError("Chance baseline needs at least two sources with >= 2 documents each.")
+    min_df = 2 if len(df) >= 40 else 1
+    observed = _cv_macro_f1(texts, y, folds, random_state, min_df)
+    rng = np.random.default_rng(random_state)
+    null = np.array([_cv_macro_f1(texts, rng.permutation(y), folds, random_state, min_df)
+                     for _ in range(n_permutations)])
+    return {"observed_macro_f1": round(observed, 3),
+            "shuffled_labels_mean": round(float(null.mean()), 3),
+            "shuffled_labels_max": round(float(null.max()), 3),
+            "p_value": round(float((1 + (null >= observed).sum()) / (n_permutations + 1)), 3),
+            "majority_class_accuracy": round(float(counts.max() / len(y)), 3),
+            "n_permutations": n_permutations, "cv_folds": folds}
+
+
+def leakage_audit(df: pd.DataFrame, top_ns=(0, 10, 25, 50, 100, 200), cv_folds: int = 5,
+                  random_state: int = 42) -> pd.DataFrame:
+    """
+    Does the classifier only learn site-specific identifiers (names, menu text, boilerplate)?
+    Re-score it (CV macro-F1) after deleting the N most source-distinctive terms of every source.
+    Columns: top_n_removed, n_terms_removed, cv_macro_f1, change_vs_full.
+    """
+    texts, y = _np_str(df["cleaned_text"]), _np_str(df["source_label"])
+    counts = pd.Series(y).value_counts()
+    folds = int(min(cv_folds, counts.min()))
+    if len(counts) < 2 or folds < 2:
+        raise ValueError("Leakage audit needs at least two sources with >= 2 documents each.")
+    top_ns = sorted(set(int(n) for n in top_ns))
+    ranked = {}
+    for s in _sources(df):
+        d = distinctive_terms(df, s, top_k=max(top_ns), min_count=3)
+        ranked[s] = list(d.loc[d["favored"] == s, "term"]) if len(d) else []
+    min_df = 2 if len(df) >= 40 else 1
+    rows, base = [], None
+    for n in top_ns:
+        banned = {t for terms in ranked.values() for t in terms[:n]}
+        cleaned = texts if not banned else np.asarray(
+            [" ".join(w for w in t.split() if w not in banned) for t in texts], dtype=object)
+        try:
+            f1 = _cv_macro_f1(cleaned, y, folds, random_state, min_df)
+        except ValueError:   # nothing left after removal
+            break
+        base = f1 if base is None else base
+        rows.append(dict(top_n_removed=n, n_terms_removed=len(banned), cv_macro_f1=round(f1, 3),
+                         change_vs_full=round(f1 - base, 3)))
+    return pd.DataFrame(rows, columns=["top_n_removed", "n_terms_removed", "cv_macro_f1", "change_vs_full"])
+
+
+def leakage_verdict(leak: pd.DataFrame) -> str:
+    """One-sentence plain-English reading of `leakage_audit` output."""
+    if leak is None or len(leak) < 2:
+        return "Not enough data for a leakage verdict."
+    first, last = leak.iloc[0], leak.iloc[-1]
+    f_full, f_last, n = float(first["cv_macro_f1"]), float(last["cv_macro_f1"]), int(last["top_n_removed"])
+    msg = (f"Macro-F1 goes from {f_full:.2f} to {f_last:.2f} after removing the top {n} distinctive terms "
+           "of each source. ")
+    if f_last >= 0.8 and f_full - f_last < 0.1:
+        return msg + "The sources stay separable without their obvious identifiers, so the signal is broad rather than leakage."
+    if f_last < 0.6 or f_full - f_last > 0.25:
+        return msg + "Much of the apparent accuracy comes from a few site-specific terms (names, menus, boilerplate); treat it as leakage, not real topical difference."
+    return msg + "Some of the accuracy depends on site-specific terms, but the sources remain partly separable on content."
+
+
+# =========================================================================== #
+# 5. Named-entity recognition
+# =========================================================================== #
 ENTITY_TYPES = {"ORG": "Organization", "GPE": "Location", "LOC": "Location", "PERSON": "Person"}
 
 
@@ -356,6 +587,10 @@ def _norm_entity(text: str) -> str:
 
 
 def extract_entities(df: pd.DataFrame, max_chars: int = 100_000, model: str = "en_core_web_sm") -> pd.DataFrame:
+    """
+    spaCy NER on the RAW text (capitalisation matters). Returns one row per (source, entity, type):
+    source_label, entity, type, mentions, documents. Empty frame if spaCy/model is unavailable.
+    """
     cols = ["source_label", "entity", "type", "mentions", "documents"]
     nlp = load_spacy(model, ("parser", "lemmatizer"))
     if nlp is None:
@@ -387,12 +622,25 @@ def top_entities(entities: pd.DataFrame, per_type: int = 10) -> pd.DataFrame:
             .sort_values(["source_label", "type", "mentions"], ascending=[True, True, False]).reset_index(drop=True))
 
 
+# =========================================================================== #
+# 6. Keyword quality evaluation (no ground truth needed)
+# =========================================================================== #
 def _padded(texts) -> list[str]:
     return [f" {t} " for t in texts]
 
 
 def evaluate_keywords(keywords: pd.DataFrame, docs: pd.DataFrame, top_k: int = 20, title: str = "",
                       corpus: Optional[pd.DataFrame] = None) -> dict:
+    """
+    Automated quality report on the top-`top_k` keywords. Per keyword:
+      coverage        share of the evaluated documents (`docs`) that contain it
+      corpus_coverage share of ALL documents (`corpus`, default = docs) that contain it; a keyword is only
+                      "near-ubiquitous" if it is everywhere in the whole corpus, not just in its own source
+      top_doc_share   share of all its occurrences sitting in a single document (burstiness)
+      source_share    largest share of occurrences in one source (source specificity)
+      flags           near-ubiquitous / single-document / dominated-by-one-doc / boilerplate-like / redundant
+    Summary: mean coverage, bigram share, redundancy, flagged share, and an overall rating.
+    """
     kw = keywords.head(top_k)["Keyword"].tolist()
     n_docs = len(docs)
     pad = _padded(docs["cleaned_text"])
@@ -463,15 +711,19 @@ def evaluate_keywords(keywords: pd.DataFrame, docs: pd.DataFrame, top_k: int = 2
     return {"table": table, "summary": summary, "report": "\n".join(lines)}
 
 
+# =========================================================================== #
+# 7. Temporal analysis
+# =========================================================================== #
 @dataclass
 class TemporalResults:
-    trend: Optional[pd.DataFrame] = None
+    trend: Optional[pd.DataFrame] = None     # index = period start, columns = keywords, values = per 1,000 tokens
     freq: str = ""
     n_docs: int = 0
     message: str = ""
 
 
 def temporal_keyword_trends(df: pd.DataFrame, keywords: list[str], freq: Optional[str] = None) -> TemporalResults:
+    """Keyword frequency (per 1,000 tokens) per period, using only pages with a *detected* publish date."""
     d = df.copy()
     if "date_source" in d.columns:
         d = d[d["date_source"] == "published"]
